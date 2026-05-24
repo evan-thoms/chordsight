@@ -1,6 +1,16 @@
 import { Chord, Analysis } from '../types'
-import { buildScaleNotes, scaleToFretPositions } from './chords'
+import { buildScaleNotes, scaleToFretPositions, parseScaleName } from './chords'
 import { NoteName } from '../types'
+
+function extractJson(text: string): string {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fenced) return fenced[1].trim()
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start !== -1 && end > start) return trimmed.slice(start, end + 1)
+  return trimmed
+}
 
 // NOTE: In production, this should go through a backend proxy.
 // For local dev, set VITE_ANTHROPIC_API_KEY in your .env file.
@@ -47,43 +57,41 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON) in exactly
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1000,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
 
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`)
+    const err = await response.json().catch(() => null) as { error?: { message?: string } } | null
+    const message = err?.error?.message ?? `HTTP ${response.status}`
+    throw new Error(`API error: ${message}`)
   }
 
   const data = await response.json()
   const text = data.content[0].text as string
 
+  let parsed: Omit<Analysis, 'recommendedScales'> & {
+    recommendedScales: { name: string; why: string }[]
+  }
   try {
-    const parsed = JSON.parse(text) as Omit<Analysis, 'recommendedScales'> & {
-      recommendedScales: { name: string; why: string }[]
-    }
-
-    // Enrich scale recommendations with actual note data + fretboard positions
-    const enriched: Analysis = {
-      ...parsed,
-      recommendedScales: parsed.recommendedScales.map(s => {
-        const root = chords[0]?.root as NoteName ?? 'A'
-        // Extract root from scale name if possible
-        const rootMatch = s.name.match(/^([A-G]#?)/)
-        const scaleRoot = rootMatch ? (rootMatch[1] as NoteName) : root
-        const scalePart = s.name.replace(/^[A-G]#?\s*/, '')
-        return {
-          name: s.name,
-          notes: buildScaleNotes(scaleRoot, scalePart),
-          positions: scaleToFretPositions(scaleRoot, scalePart),
-          why: s.why,
-        }
-      }),
-    }
-    return enriched
+    parsed = JSON.parse(extractJson(text))
   } catch {
     throw new Error('Failed to parse analysis from Claude')
+  }
+
+  const fallbackRoot = (chords[0]?.root as NoteName) ?? 'A'
+  return {
+    ...parsed,
+    recommendedScales: parsed.recommendedScales.map(s => {
+      const { root, pattern } = parseScaleName(s.name, fallbackRoot)
+      return {
+        name: s.name,
+        notes: buildScaleNotes(root, pattern),
+        positions: scaleToFretPositions(root, pattern),
+        why: s.why,
+      }
+    }),
   }
 }

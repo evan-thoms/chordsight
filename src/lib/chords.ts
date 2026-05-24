@@ -31,6 +31,18 @@ export const SCALE_PATTERNS: Record<string, number[]> = {
   'Blues':            [0, 3, 5, 6, 7, 10],
 }
 
+export function parseScaleName(name: string, fallbackRoot: NoteName): { root: NoteName; pattern: string } {
+  const rootMatch = name.match(/^([A-G]#?)/)
+  const root = rootMatch ? (rootMatch[1] as NoteName) : fallbackRoot
+  let pattern = name.replace(/^[A-G]#?\s*/, '').replace(/\s*\([^)]*\)/g, '').trim()
+  const aliases: Record<string, string> = {
+    'Major Scale': 'Major',
+    'Minor Scale': 'Natural Minor',
+  }
+  pattern = aliases[pattern] ?? pattern
+  return { root, pattern }
+}
+
 export function noteIndex(note: NoteName): number {
   return ALL_NOTES.indexOf(note)
 }
