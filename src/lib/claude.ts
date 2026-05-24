@@ -1,4 +1,4 @@
-import { Chord, Analysis } from '../types'
+import { Chord, Analysis, StreamingPreview } from '../types'
 import { buildScaleNotes, scaleToFretPositions, parseScaleName } from './chords'
 import { NoteName } from '../types'
 
@@ -12,75 +12,75 @@ function extractJson(text: string): string {
   return trimmed
 }
 
-// NOTE: In production, this should go through a backend proxy.
-// For local dev, set VITE_ANTHROPIC_API_KEY in your .env file.
-// NEVER commit your API key or deploy this directly to a public host.
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string
+function extractStringField(text: string, field: string): string | undefined {
+  const match = text.match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`,))
+  if (!match) return undefined
+  try {
+    return JSON.parse(`"${match[1]}"`)
+  } catch {
+    return undefined
+  }
+}
 
-export async function analyzeProgression(chords: Chord[]): Promise<Analysis> {
+export function parseStreamingPreview(text: string): StreamingPreview {
+  const preview: StreamingPreview = {}
+  const key = extractStringField(text, 'key')
+  const mode = extractStringField(text, 'mode')
+  const emotionalCharacter = extractStringField(text, 'emotionalCharacter')
+  const explanation = extractStringField(text, 'explanation')
+  const soloingTips = extractStringField(text, 'soloingTips')
+
+  if (key) preview.key = key
+  if (mode) preview.mode = mode
+  if (emotionalCharacter) preview.emotionalCharacter = emotionalCharacter
+  if (explanation) preview.explanation = explanation
+  if (soloingTips) preview.soloingTips = soloingTips
+
+  const chordFnMatch = text.match(/"chordFunctions"\s*:\s*\[([\s\S]*?)\](?=\s*,\s*"(?:recommendedScales|soloingTips|emotionalCharacter|explanation)")/)
+  if (chordFnMatch) {
+    try {
+      const fns = JSON.parse(`[${chordFnMatch[1]}]`) as StreamingPreview['chordFunctions']
+      if (Array.isArray(fns) && fns.length > 0) preview.chordFunctions = fns
+    } catch { /* partial array — wait for more tokens */ }
+  }
+
+  return preview
+}
+
+function buildPrompt(chords: Chord[]): string {
   const progressionStr = chords.map(c => c.name).join(' – ')
   const chordDetails = chords.map(c => `${c.name} (notes: ${c.notes.join(', ')})`).join(', ')
 
-  const prompt = `You are a guitar teacher helping a beginner-intermediate guitarist understand music theory.
+  return `You are a guitar teacher for beginner-intermediate guitarists.
 
-Analyze this chord progression: ${progressionStr}
-Chord details: ${chordDetails}
+Analyze: ${progressionStr}
+Chords: ${chordDetails}
 
-Return ONLY valid JSON (no markdown, no explanation outside the JSON) in exactly this shape:
+Return ONLY valid JSON (no markdown) in this shape:
 {
-  "key": "string (e.g. A minor, G major)",
-  "mode": "string (e.g. Aeolian, Ionian)",
-  "chordFunctions": [
-    { "chord": "Am", "numeral": "i", "function": "tonic — home base, sounds resolved" }
-  ],
-  "recommendedScales": [
-    {
-      "name": "A Minor Pentatonic",
-      "why": "Safe over all chords — the b3 and b7 match the minor feel throughout"
-    },
-    {
-      "name": "A Natural Minor",
-      "why": "Adds more color notes, especially nice over the iv and v chords"
-    }
-  ],
-  "soloingTips": "2-3 sentences of concrete advice for soloing over this specific progression. Mention which chord to land on, where to bend, etc.",
-  "emotionalCharacter": "one sentence describing the mood/vibe of this progression",
-  "explanation": "3-4 sentences explaining WHY this progression works the way it does, in plain language for someone who doesn't know much theory yet"
-}`
+  "key": "e.g. A minor",
+  "mode": "e.g. Aeolian",
+  "emotionalCharacter": "one short phrase, max 8 words — mood only, no poetry",
+  "explanation": "max 4 sentences, plain language, explain why the progression works. Direct, no filler.",
+  "chordFunctions": [{ "chord": "Am", "numeral": "i", "function": "brief role, under 12 words" }],
+  "recommendedScales": [{ "name": "A Minor Pentatonic", "why": "one concise sentence" }],
+  "soloingTips": "2-3 sentences of concrete, actionable advice — fret numbers, target notes, which chord to land on. No filler or motivational fluff."
+}
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  })
+Rules:
+- Exactly 2 recommendedScales
+- Keep chordFunctions function labels short and practical
+- emotionalCharacter must be a brief mood label, not a paragraph`
+}
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => null) as { error?: { message?: string } } | null
-    const message = err?.error?.message ?? `HTTP ${response.status}`
-    throw new Error(`API error: ${message}`)
-  }
+type RawAnalysis = Omit<Analysis, 'recommendedScales'> & {
+  recommendedScales: { name: string; why: string }[]
+}
 
-  const data = await response.json()
-  const text = data.content[0].text as string
-
-  let parsed: Omit<Analysis, 'recommendedScales'> & {
-    recommendedScales: { name: string; why: string }[]
-  }
-  try {
-    parsed = JSON.parse(extractJson(text))
-  } catch {
-    throw new Error('Failed to parse analysis from Claude')
-  }
-
+function enrichAnalysis(
+  parsed: RawAnalysis,
+  chords: Chord[],
+): Analysis {
   const fallbackRoot = (chords[0]?.root as NoteName) ?? 'A'
   return {
     ...parsed,
@@ -94,4 +94,87 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON) in exactly
       }
     }),
   }
+}
+
+async function streamMessageText(response: Response, onText: (text: string) => void): Promise<string> {
+  const reader = response.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let text = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let newlineIndex: number
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      if (!line.startsWith('data:')) continue
+
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+
+      let event: { type?: string; delta?: { type?: string; text?: string } }
+      try {
+        event = JSON.parse(payload)
+      } catch {
+        continue
+      }
+
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+        text += event.delta.text
+        onText(text)
+      }
+    }
+  }
+
+  return text
+}
+
+// NOTE: In production, this should go through a backend proxy.
+// For local dev, set VITE_ANTHROPIC_API_KEY in your .env file.
+// NEVER commit your API key or deploy this directly to a public host.
+const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY as string
+
+export interface AnalyzeOptions {
+  onStream?: (preview: StreamingPreview) => void
+}
+
+export async function analyzeProgression(chords: Chord[], options: AnalyzeOptions = {}): Promise<Analysis> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 600,
+      stream: true,
+      messages: [{ role: 'user', content: buildPrompt(chords) }],
+    }),
+  })
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => null) as { error?: { message?: string } } | null
+    const message = err?.error?.message ?? `HTTP ${response.status}`
+    throw new Error(`API error: ${message}`)
+  }
+
+  const text = await streamMessageText(response, accumulated => {
+    options.onStream?.(parseStreamingPreview(accumulated))
+  })
+
+  let parsed: RawAnalysis
+  try {
+    parsed = JSON.parse(extractJson(text))
+  } catch {
+    throw new Error('Failed to parse analysis from Claude')
+  }
+
+  return enrichAnalysis(parsed, chords)
 }

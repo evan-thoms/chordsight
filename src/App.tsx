@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Chord, Analysis } from './types'
+import { Chord, Analysis, StreamingPreview } from './types'
 import { makeChord } from './lib/chords'
 import { analyzeProgression } from './lib/claude'
 import { ChordPill } from './components/ChordPill'
 import { NoteSelector } from './components/NoteSelector'
 import { AnalysisPanel } from './components/AnalysisPanel'
+import { StreamingPreviewPanel } from './components/StreamingPreview'
 
 type InputMode = 'name' | 'notes'
 
@@ -14,6 +15,7 @@ export function App() {
   const [inputError, setInputError] = useState('')
   const [inputMode, setInputMode] = useState<InputMode>('name')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [streamingPreview, setStreamingPreview] = useState<StreamingPreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -47,13 +49,17 @@ export function App() {
     setLoading(true)
     setError('')
     setAnalysis(null)
+    setStreamingPreview(null)
     try {
-      const result = await analyzeProgression(chords)
+      const result = await analyzeProgression(chords, {
+        onStream: setStreamingPreview,
+      })
       setAnalysis(result)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong')
     } finally {
       setLoading(false)
+      setStreamingPreview(null)
     }
   }
 
@@ -186,8 +192,15 @@ export function App() {
             marginBottom: 16 }}>{error}</p>
         )}
 
+        {loading && (
+          <div style={{ marginTop: 32, paddingTop: 32,
+            borderTop: '1px solid var(--c-border, #2a2a2a)' }}>
+            <StreamingPreviewPanel preview={streamingPreview ?? {}} />
+          </div>
+        )}
+
         {/* Analysis output */}
-        {analysis && (
+        {analysis && !loading && (
           <div style={{ marginTop: 32, paddingTop: 32,
             borderTop: '1px solid var(--c-border, #2a2a2a)' }}>
             <AnalysisPanel analysis={analysis} />

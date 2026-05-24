@@ -108,6 +108,7 @@ export function AnalysisPanel({ analysis }: Props) {
               </p>
               {scale.positions.length > 0 && (
                 <Fretboard
+                  key={scale.name}
                   positions={scale.positions}
                   scaleNotes={scale.notes}
                 />

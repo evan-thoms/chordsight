@@ -22,6 +22,15 @@ export interface Analysis {
   explanation: string
 }
 
+export interface StreamingPreview {
+  key?: string
+  mode?: string
+  emotionalCharacter?: string
+  explanation?: string
+  soloingTips?: string
+  chordFunctions?: { chord: string; numeral: string; function: string }[]
+}
+
 export interface ScaleRecommendation {
   name: string
   notes: NoteName[]

@@ -88,15 +88,15 @@ export function identifyChord(notes: NoteName[]): { name: string; root: string; 
   return null
 }
 
-// Generate fretboard positions for a scale (box 1, starting around fret 5)
-export function scaleToFretPositions(root: NoteName, scaleName: string, startFret = 4): FretPosition[] {
+// Generate fretboard positions for a scale across the full neck (frets 0–12)
+export function scaleToFretPositions(root: NoteName, scaleName: string, maxFret = 12): FretPosition[] {
   const scaleNotes = buildScaleNotes(root, scaleName)
   const scaleSet = new Set(scaleNotes)
   const positions: FretPosition[] = []
   for (let str = 1; str <= 6; str++) {
     const openNote = OPEN_STRINGS[str - 1]
     const openIdx = noteIndex(openNote)
-    for (let fret = startFret; fret <= startFret + 4; fret++) {
+    for (let fret = 0; fret <= maxFret; fret++) {
       const note = noteFromIndex(openIdx + fret)
       if (scaleSet.has(note)) {
         positions.push({ string: str, fret, isRoot: note === root })
